@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autoregressive Image Generation Visualization</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #fef6f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            color: #5b4230;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .logo {
+            height: 50px;
+            width: auto;
+        }
+        h1 { margin: 0; font-size: 1.5rem; }
+        .controls {
+            margin-bottom: 20px;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(91,66,48,0.15);
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: center;
+            border: 1px solid rgba(91,66,48,0.1);
+        }
+        .canvas-container {
+            position: relative;
+            box-shadow: 0 4px 15px rgba(91,66,48,0.25);
+            background: #ede5dc;
+            border-radius: 4px;
+            overflow: hidden;
+            max-width: 100%;
+            border: 2px solid #5b4230;
+        }
+        canvas {
+            display: block;
+            background-image: 
+                linear-gradient(45deg, #ccc 25%, transparent 25%), 
+                linear-gradient(-45deg, #ccc 25%, transparent 25%), 
+                linear-gradient(45deg, transparent 75%, #ccc 75%), 
+                linear-gradient(-45deg, transparent 75%, #ccc 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+            max-width: 100%;
+            height: auto;
+        }
+        #status {
+            margin-top: 10px;
+            font-weight: bold;
+            color: #6a4c93;
+            min-height: 24px;
+        }
+        .highlight {
+            position: absolute;
+            border: 2px solid #f68a6b;
+            background-color: rgba(246, 138, 107, 0.3);
+            pointer-events: none;
+            display: none;
+            box-shadow: 0 0 10px #f68a6b;
+            z-index: 10;
+            top: 0;
+            left: 0;
+            transition: transform 0.05s linear;
+        }
+        .info-panel {
+            margin-top: 20px;
+            max-width: 600px;
+            text-align: center;
+            font-size: 0.9rem;
+            color: #5b4230;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <img src="images/airealistlogo.png" alt="AI Realist" class="logo">
+        <h1>Autoregressive Token Generation</h1>
+    </div>
+    
+    <div class="controls">
+        <input type="file" id="imageInput" accept="image/*">
+        <button id="startBtn" disabled>Start Generation</button>
+        <button id="resetBtn" disabled>Reset</button>
+        <label>
+            Speed: <input type="range" id="speedRange" min="1" max="50" value="10">
+        </label>
+    </div>
+
+    <div class="canvas-container">
+        <canvas id="mainCanvas" width="512" height="512"></canvas>
+        <div id="cursor" class="highlight"></div>
+    </div>
+
+    <div id="status">Upload an image to begin...</div>
+
+    <div class="info-panel">
+        <p><strong>Step 1:</strong> The model predicts the next "Token" (patch) based on previous ones.</p>
+        <p><strong>Step 2:</strong> It fills the grid sequentially (Autoregressive).</p>
+        <p><strong>Step 3:</strong> A decoder smooths the final result.</p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('mainCanvas');
+        const ctx = canvas.getContext('2d');
+        const cursor = document.getElementById('cursor');
+        const imageInput = document.getElementById('imageInput');
+        const startBtn = document.getElementById('startBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const statusEl = document.getElementById('status');
+        const speedRange = document.getElementById('speedRange');
+
+        let sourceImage = null;
+        let isGenerating = false;
+        let animationId = null;
+        
+        // Configuration
+        const TOKEN_SIZE = 16; // 16x16 pixel blocks (typical for visual autoregressive models)
+        let cols, rows;
+
+        // Auto-load default image on page load
+        window.addEventListener('load', () => {
+            loadImage('images/cusquito.jpeg');
+        });
+
+        // Function to load image from URL or file
+        function loadImage(src) {
+            const img = new Image();
+            img.onload = () => {
+                // Resize logic to fit canvas
+                const aspect = img.width / img.height;
+                let drawWidth = canvas.width;
+                let drawHeight = canvas.height;
+                
+                if (aspect > 1) {
+                    drawHeight = canvas.width / aspect;
+                } else {
+                    drawWidth = canvas.height * aspect;
+                }
+
+                // Create an offscreen canvas to store the source data
+                const offCanvas = document.createElement('canvas');
+                offCanvas.width = canvas.width;
+                offCanvas.height = canvas.height;
+                const offCtx = offCanvas.getContext('2d');
+                
+                // Clear and draw centered
+                offCtx.fillStyle = "#ede5dc";
+                offCtx.fillRect(0, 0, offCanvas.width, offCanvas.height);
+                const x = (canvas.width - drawWidth) / 2;
+                const y = (canvas.height - drawHeight) / 2;
+                
+                offCtx.drawImage(img, x, y, drawWidth, drawHeight);
+                
+                sourceImage = offCanvas;
+                resetCanvas();
+                startBtn.disabled = false;
+                resetBtn.disabled = false;
+                statusEl.textContent = "Image loaded. Ready to generate tokens.";
+                
+                // Auto-start generation for default image
+                if (src.includes('cusquito.jpeg')) {
+                    setTimeout(() => {
+                        startBtn.click();
+                    }, 500);
+                }
+            };
+            img.src = src;
+        }
+
+        // Load Image from file input
+        imageInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                loadImage(event.target.result);
+            };
+            reader.readAsDataURL(file);
+        });
+
+        function resetCanvas() {
+            if (animationId) cancelAnimationFrame(animationId);
+            isGenerating = false;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            cursor.style.display = 'none';
+            statusEl.textContent = "Ready.";
+            
+            // Draw grid lines faintly
+            ctx.strokeStyle = "rgba(0,0,0,0.05)";
+            ctx.lineWidth = 1;
+            cols = Math.ceil(canvas.width / TOKEN_SIZE);
+            rows = Math.ceil(canvas.height / TOKEN_SIZE);
+            
+            for (let i = 0; i <= cols; i++) {
+                ctx.beginPath();
+                ctx.moveTo(i * TOKEN_SIZE, 0);
+                ctx.lineTo(i * TOKEN_SIZE, canvas.height);
+                ctx.stroke();
+            }
+            for (let i = 0; i <= rows; i++) {
+                ctx.beginPath();
+                ctx.moveTo(0, i * TOKEN_SIZE);
+                ctx.lineTo(canvas.width, i * TOKEN_SIZE);
+                ctx.stroke();
+            }
+        }
+
+        startBtn.addEventListener('click', () => {
+            if (!sourceImage || isGenerating) return;
+            isGenerating = true;
+            statusEl.textContent = "Generating tokens autoregressively...";
+            
+            // Clear canvas to start fresh
+            ctx.fillStyle = "#f0f0f0";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            cols = Math.ceil(canvas.width / TOKEN_SIZE);
+            rows = Math.ceil(canvas.height / TOKEN_SIZE);
+            let currentToken = 0;
+            const totalTokens = cols * rows;
+
+            cursor.style.width = `${TOKEN_SIZE}px`;
+            cursor.style.height = `${TOKEN_SIZE}px`;
+            cursor.style.display = 'block';
+
+            function generateStep() {
+                // Calculate speed (tokens per frame) based on slider
+                const tokensPerFrame = parseInt(speedRange.value);
+
+                for (let k = 0; k < tokensPerFrame; k++) {
+                    if (currentToken >= totalTokens) {
+                        finishGeneration();
+                        return;
+                    }
+
+                    const c = currentToken % cols;
+                    const r = Math.floor(currentToken / cols);
+                    const x = c * TOKEN_SIZE;
+                    const y = r * TOKEN_SIZE;
+
+                    // Move cursor using transform for smoother performance
+                    cursor.style.transform = `translate(${x}px, ${y}px)`;
+                    
+                    // Step 1: Sample a single pixel from center of the token region
+                    const sampleData = ctx.createImageData(1, 1);
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = 1;
+                    tempCanvas.height = 1;
+                    const tempCtx = tempCanvas.getContext('2d');
+                    tempCtx.drawImage(sourceImage, x + TOKEN_SIZE/2, y + TOKEN_SIZE/2, 1, 1, 0, 0, 1, 1);
+                    const pixelData = tempCtx.getImageData(0, 0, 1, 1);
+                    
+                    // Step 2: Fill entire token with that averaged color (blocky, quantized look)
+                    ctx.fillStyle = `rgb(${pixelData.data[0]}, ${pixelData.data[1]}, ${pixelData.data[2]})`;
+                    ctx.fillRect(x, y, TOKEN_SIZE, TOKEN_SIZE);
+                    
+                    // Show token border to emphasize the discrete nature
+                    ctx.strokeStyle = "#f68a6b";
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(x, y, TOKEN_SIZE, TOKEN_SIZE);
+                    
+                    currentToken++;
+                }
+
+                animationId = requestAnimationFrame(generateStep);
+            }
+
+            generateStep();
+        });
+
+        resetBtn.addEventListener('click', resetCanvas);
+
+        function finishGeneration() {
+            isGenerating = false;
+            cursor.style.display = 'none';
+            statusEl.textContent = "All tokens generated! Running Decoder (Smoothing)...";
+            
+            // Pause to show the blocky token result
+            setTimeout(() => {
+                // Simulate decoder by gradually blending to smooth image
+                let smoothProgress = 0;
+                const smoothSteps = 30;
+                
+                function smoothStep() {
+                    smoothProgress++;
+                    const alpha = smoothProgress / smoothSteps;
+                    
+                    // Clear canvas
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    
+                    // Draw the blocky version (stored in a temp canvas)
+                    const blockyData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    
+                    // Blend towards smooth image
+                    ctx.globalAlpha = 1 - alpha;
+                    ctx.putImageData(blockyData, 0, 0);
+                    
+                    ctx.globalAlpha = alpha;
+                    ctx.drawImage(sourceImage, 0, 0);
+                    
+                    ctx.globalAlpha = 1;
+                    
+                    if (smoothProgress < smoothSteps) {
+                        requestAnimationFrame(smoothStep);
+                    } else {
+                        // Final smooth result
+                        ctx.drawImage(sourceImage, 0, 0);
+                        statusEl.textContent = "✓ Generation Complete! Autoregressive tokens → Smooth output";
+                    }
+                }
+                
+                // Store blocky version before smoothing
+                const blockyImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                
+                // Start smoothing animation
+                function animateSmooth() {
+                    let progress = 0;
+                    const steps = 20;
+                    
+                    function step() {
+                        progress++;
+                        const t = progress / steps;
+                        
+                        // Restore blocky image
+                        ctx.putImageData(blockyImage, 0, 0);
+                        
+                        // Overlay smooth image with increasing opacity
+                        ctx.globalAlpha = t;
+                        ctx.drawImage(sourceImage, 0, 0);
+                        ctx.globalAlpha = 1;
+                        
+                        statusEl.textContent = `Decoder smoothing: ${Math.round(t * 100)}%`;
+                        
+                        if (progress < steps) {
+                            requestAnimationFrame(step);
+                        } else {
+                            statusEl.textContent = "✓ Complete! Autoregressive tokens → Decoder → Smooth output";
+                        }
+                    }
+                    step();
+                }
+                
+                animateSmooth();
+            }, 800);
+        }
+    </script>
+</body>
+</html>
