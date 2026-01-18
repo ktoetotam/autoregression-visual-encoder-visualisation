@@ -143,7 +143,7 @@
     
     <div class="controls">
         <input type="file" id="imageInput" accept="image/*">
-        <button id="startBtn" disabled>Start Generation</button>
+        <button id="startBtn" disabled>Restart Generation</button>
         <button id="resetBtn" disabled>Reset</button>
         <label>
             Speed: <input type="range" id="speedRange" min="1" max="50" value="10">
@@ -232,12 +232,10 @@
                 resetBtn.disabled = false;
                 statusEl.textContent = "Image loaded. Ready to generate tokens.";
                 
-                // Auto-start generation for default image
-                if (src.includes('cusquito.jpeg')) {
-                    setTimeout(() => {
-                        startBtn.click();
-                    }, 500);
-                }
+                // Auto-start generation for any loaded image
+                setTimeout(() => {
+                    startBtn.click();
+                }, 500);
             };
             img.src = src;
         }
